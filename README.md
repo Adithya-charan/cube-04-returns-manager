@@ -411,8 +411,6 @@ cube-04-returns-manager/
 - Local storage and an S3-compatible storage adapter
 - pytest unit and API tests with mocked vision
 
-### Not Yet Verified / Limitations
-
 - **Live Qwen3-VL inference:** the model is installed locally, but the real-image test timed out after 300 seconds.
 - **Physical camera capture:** the mobile picker can request the rear camera, but no physical phone test was performed.
 - **QR scanning:** values are typed manually; there is no camera QR decoder or hidden-barcode support. QR verification is not connected to the decision engine and does not bind an order, SKU, or tenant.
