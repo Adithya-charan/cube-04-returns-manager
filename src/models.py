@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 class EvidenceState(str, Enum):
     OBSERVED = "OBSERVED"
+    MISSING = "MISSING"
     NOT_OBSERVED = "NOT_OBSERVED"
     UNCERTAIN = "UNCERTAIN"
     VERIFIED = "VERIFIED"
@@ -130,14 +131,54 @@ class DecisionRecord(BaseModel):
     content_hash: Optional[str] = None
 
     def finalize(self):
-        """Generates content hash for final mutability lock."""
+        """Hash the decision and its persisted evidence for tamper detection."""
+        def normalized_timestamp(value: datetime) -> str:
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            else:
+                value = value.astimezone(timezone.utc)
+            return value.isoformat()
+
         data_to_hash = {
             "record_id": self.record_id,
+            "organization_id": self.organization_id,
+            "subject": self.subject,
+            "images": sorted(self.images),
+            "checks": sorted(
+                [
+                    {
+                        "check_key": check.check_key,
+                        "verdict": check.verdict.value,
+                        "evidence_refs": sorted(check.evidence_refs),
+                        "confidence": check.confidence,
+                        "detail": check.detail,
+                        "model_version": check.model_version,
+                        "latency_ms": check.latency_ms,
+                        "timestamp": normalized_timestamp(check.timestamp),
+                    }
+                    for check in self.checks
+                ],
+                key=lambda check: (check["check_key"], check["detail"] or ""),
+            ),
             "outcome": self.outcome.value,
-            "overrides_count": len(self.overrides),
+            "overrides": sorted(
+                [
+                    {
+                        "override_id": override.override_id,
+                        "original_verdict": override.original_verdict,
+                        "new_verdict": override.new_verdict,
+                        "operator_id": override.operator_id,
+                        "reason": override.reason,
+                        "timestamp": normalized_timestamp(override.timestamp),
+                    }
+                    for override in self.overrides
+                ],
+                key=lambda override: override["override_id"],
+            ),
             "status": self.status.value
         }
-        self.content_hash = hashlib.sha256(json.dumps(data_to_hash, sort_keys=True).encode()).hexdigest()
+        canonical_data = json.dumps(data_to_hash, sort_keys=True, separators=(",", ":"))
+        self.content_hash = hashlib.sha256(canonical_data.encode()).hexdigest()
 
 # 9. ReturnRecord (The core overarching bounded context entity)
 class ReturnRecord(BaseModel):
@@ -182,7 +223,11 @@ class RawReturnInput(BaseModel):
     photo_refs: str
     operator_id: str
     captured_at: datetime
+    product_qr: Optional[str] = None
+    package_qr: Optional[str] = None
+    auth_event_id: Optional[str] = None
     qr_auth_result: Optional[str] = None
+    scenario: Optional[str] = None
 
     @field_validator('record_id')
     @classmethod

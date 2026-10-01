@@ -1,5 +1,9 @@
 # CUBE Returns Manager: Architecture
 
+> **Implementation status (2026-10-01):** This document's design sections describe intended boundaries, not proof that every feature is connected. In the current code, QR identifiers are manually typed; standalone authentication results are not bound to inspection records and client-supplied results are ignored by the decision engine. There is no barcode camera/scanner or hidden-marker implementation. Image quality checks do not detect blur/glare/exposure/framing, and camera hardware has not been tested. Ollama/Qwen3-VL is configured, but its real-image request timed out at 300 seconds in the local test. S3-compatible storage exists, but the Ollama provider expects local paths, so remote storage is not end-to-end integrated. The API has no user authentication/authorization; tenant IDs are caller-supplied and do not establish identity.
+
+The current source of truth for verified behavior is `README.md` and the test suite. Sections below should be read as architectural intent wherever they exceed that verified state.
+
 ## 1. System Responsibilities
 The Returns Manager is responsible for assessing the identity, completeness, condition, and next-step disposition of returned physical parcels. Its primary output is a structured, evidence-backed decision record for downstream processing by the Recovery Manager.
 

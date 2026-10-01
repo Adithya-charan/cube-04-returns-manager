@@ -4,6 +4,7 @@ import os
 import signal
 import sys
 import socket
+import shutil
 
 def get_lan_ip():
     """Get the LAN IP address of this machine."""
@@ -31,7 +32,19 @@ def main():
     
     # 2. Start frontend on 0.0.0.0 for LAN access  
     print("[2/3] Starting frontend on 0.0.0.0:5173 (LAN accessible)...")
-    frontend = subprocess.Popen(["npm", "run", "dev"], cwd="frontend", shell=True)
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    frontend_dir = os.path.join(project_dir, "mobile")
+    npm_command = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm_command:
+        backend.terminate()
+        raise RuntimeError("npm is required to start the frontend")
+    frontend_env = os.environ.copy()
+    frontend_env["VITE_API_BASE"] = f"http://{lan_ip}:8000" if lan_ip else "http://localhost:8000"
+    frontend = subprocess.Popen(
+        [npm_command, "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"],
+        cwd=frontend_dir,
+        env=frontend_env,
+    )
     
     # 3. Wait for services to start
     print("[3/3] Waiting for services to start...")
@@ -50,7 +63,7 @@ def main():
         print(f"   Backend API:  http://{lan_ip}:8000/docs")
         print(f"   Frontend UI:  http://{lan_ip}:5173")
         print()
-        print("   ⚠️  Configure frontend VITE_API_BASE=http://{lan_ip}:8000")
+        print("   Frontend is configured to call the backend on this machine.")
     else:
         print("⚠️  Could not detect LAN IP. Check 'ipconfig' manually.")
     print()

@@ -101,7 +101,7 @@ def test_parse_missing_status_maps_to_not_observed():
     }
     obs = _parse_ollama_response(json.dumps(data), ["img1.jpg"])
     cable_obs = [o for o in obs if o.object_name == "cable"]
-    assert cable_obs[0].state == EvidenceState.NOT_OBSERVED
+    assert cable_obs[0].state == EvidenceState.MISSING
 
 
 def test_parse_text_observations():
@@ -126,6 +126,36 @@ def test_observation_type_is_set():
     obs = _parse_ollama_response(raw, ["img1.jpg"])
     for o in obs:
         assert o.observation_type in ("identity", "completeness", "condition", "damage", "text", "generic")
+
+
+def test_multi_image_observation_uses_explicit_image_index():
+    data = {
+        "product_identity_observations": [],
+        "visible_components": [
+            {"name": "cable", "status": "PRESENT", "confidence": 0.9, "evidence": "Cable visible beside the charger", "image_index": 1}
+        ],
+        "condition_observations": [],
+        "damage_observations": [],
+        "text_observations": [],
+    }
+
+    observations = _parse_ollama_response(json.dumps(data), ["front.jpg", "accessories.jpg"])
+    assert observations[0].image_reference == "accessories.jpg"
+
+
+def test_multi_image_observation_without_index_is_unattributed():
+    data = {
+        "product_identity_observations": [],
+        "visible_components": [
+            {"name": "cable", "status": "PRESENT", "confidence": 0.9, "evidence": "Cable visible"}
+        ],
+        "condition_observations": [],
+        "damage_observations": [],
+        "text_observations": [],
+    }
+
+    observations = _parse_ollama_response(json.dumps(data), ["front.jpg", "accessories.jpg"])
+    assert observations[0].image_reference == ""
 
 
 # --------------------------------------------------------------------------
@@ -227,13 +257,20 @@ def test_valid_structured_response(mock_get, mock_post, tmp_path):
     mock_post.return_value = _mock_chat_response(json.dumps(MOCK_VALID_RESPONSE))
 
     provider = _make_provider()
-    result = provider.inspect([str(img)], ["cable", "manual"])
+    result = provider.inspect(
+        [str(img)],
+        ["cable", "manual"],
+        identity_guidance='["SKU-TEST-001", "ASIN-TEST-001"]',
+    )
 
     assert result.error is None
     assert result.provider == "ollama"
     assert result.model_name == "qwen3-vl:8b"
     assert len(result.observations) > 0
     assert result.latency_ms >= 0
+    prompt = mock_post.call_args.kwargs["json"]["prompt"]
+    assert 'Expected product identifiers for visual verification only: ["SKU-TEST-001", "ASIN-TEST-001"]' in prompt
+    assert "Never repeat one as an observation" in prompt
 
 
 @patch("src.vision_ollama.requests.post")

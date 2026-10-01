@@ -1,5 +1,26 @@
 # CUBE Returns Manager — Final Project Report
 
+## Current Verification Status (2026-10-01)
+
+This section supersedes the historical verification table below. The current worktree was audited and the following checks were run:
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest -q` | 43 passed after code changes |
+| Focused engine/API/media regressions | Passed after changes |
+| Website and mobile Vite production builds | Passed after route changes |
+| FastAPI startup and `/health` | Passed; `start_demo.py` also launched the API and mobile Vite app |
+| Ollama executable/model | Available; Qwen3-VL:8B listed locally |
+| Real Qwen image inference | **Not verified**; request timed out after 300 seconds |
+| QR camera scanning / hidden barcode | **Not implemented / not verified**; UI accepts manually entered IDs |
+| Physical phone camera | **Not verified** |
+
+Fixed in this audit: frontend navigation targets now mount in both apps; the QR step cannot continue before a verification response, and client-supplied QR results are ignored by the decision engine; raw `operator_disposition` no longer overrides an inspection; unknown condition routes to review; review resolution refreshes the stored hash; upload suffixes derive from validated MIME and upload reads are bounded; the demo launcher targets `mobile/` and configures the LAN API URL.
+
+Remaining security/architecture limitations: no API authentication or authorization, wildcard CORS, caller-supplied tenant IDs, QR binding is not tied to the inspection record, hash coverage is partial, and S3 references are not usable by the current local-path Ollama reader. Image quality does not score blur, glare, exposure, or framing. The nested `VerifyMe-temp` repository is a separate NFT app, not a hidden-barcode dependency.
+
+The preceding report content records an earlier agent's claims and should not be read as a current verification result.
+
 ## System Audit & State Summary
 
 This project has undergone a complete rigorous audit and inspection for submission to CUBE Build-A-Thon 2026. The backend runs on FastAPI, the frontend on React/Vite, using local deterministic disposition rules and an abstraction for local vision models (Ollama). 

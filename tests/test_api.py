@@ -32,7 +32,8 @@ def test_valid_synthetic_record(client):
     assert data["record_id"] == "RTN-0003"
     assert data["organization_id"] == "org_demo_bravo"
     assert len(data["images"]) == 3
-    assert data["outcome"] == "liquidate"
+    assert data["outcome"] == "pending_review"
+    assert data["overrides"] == []
     assert data["content_hash"] is not None
     assert data["correlation_id"] is not None
 
@@ -62,17 +63,52 @@ def test_uncertain_evidence_state(client):
     assert any(chk["verdict"] == "UNCERTAIN" for chk in data["checks"])
     assert data["content_hash"] is not None
 
-def test_human_override_preservation(client):
-    response = client.post("/agent", json=valid_payload)
+def test_operator_disposition_requires_review_resolution(client):
+    payload = valid_payload.copy()
+    payload["record_id"] = "RTN-OPERATOR-DISPOSITION"
+    payload["operator_disposition"] = "dispose"
+    response = client.post("/agent", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["outcome"] == "liquidate"
-    assert len(data["overrides"]) == 1
-    override = data["overrides"][0]
-    assert override["original_verdict"] == "pending_review"
-    assert override["new_verdict"] == "liquidate"
-    assert override["operator_id"] == "op_chen"
-    assert data["status"] == "completed"
+    assert data["outcome"] == "pending_review"
+    assert data["overrides"] == []
+    original_hash = data["content_hash"]
+
+    resolved = client.post(
+        f"/reviews/{payload['record_id']}/resolve",
+        params={
+            "new_disposition": "liquidate",
+            "operator_id": "op_chen",
+            "org_id": payload["org_id"],
+            "reason": "Verified during physical review",
+        },
+    )
+    assert resolved.status_code == 200
+
+    stored = client.get(f"/returns/{payload['record_id']}", params={"org_id": payload["org_id"]})
+    assert stored.status_code == 200
+    result = stored.json()
+    assert result["outcome"] == "liquidate"
+    assert result["status"] == "completed"
+    assert result["content_hash"] != original_hash
+    assert result["overrides"][0]["original_verdict"] == "pending_review"
+    assert result["overrides"][0]["new_verdict"] == "liquidate"
+    assert result["overrides"][0]["reason"] == "Verified during physical review"
+
+@pytest.mark.parametrize("qr_result", ["AUTHENTICATED", "PRODUCT_PACKAGE_MISMATCH"])
+def test_client_qr_result_cannot_change_identity(client, qr_result):
+    payload = valid_payload.copy()
+    payload["record_id"] = f"RTN-UNTRUSTED-QR-{qr_result}"
+    payload["operator_disposition"] = None
+    payload["qr_auth_result"] = qr_result
+
+    response = client.post("/inspect", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    identity = next(check for check in data["checks"] if check["check_key"] == "identity")
+    assert identity["verdict"] == "UNCERTAIN"
+    assert data["outcome"] == "pending_review"
 
 def test_invalid_record_values(client):
     payload = valid_payload.copy()

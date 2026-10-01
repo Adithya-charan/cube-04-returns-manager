@@ -651,3 +651,80 @@
     }
   }
 }
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100dvh;
+}
+
+.cube-shell .bg-slate-950,
+.cube-shell .bg-slate-950\/40,
+.cube-shell .bg-slate-950\/50,
+.cube-shell .bg-slate-950\/60 {
+  background-color: #eff4ff;
+}
+
+.cube-shell .bg-slate-900,
+.cube-shell .bg-slate-900\/80 {
+  background-color: #ffffff;
+}
+
+.cube-shell .bg-slate-800 {
+  background-color: #e5eeff;
+}
+
+.cube-shell .text-white,
+.cube-shell .text-slate-100,
+.cube-shell .text-slate-200 {
+  color: #0b1c30;
+}
+
+.cube-shell .text-slate-300 {
+  color: #343f50;
+}
+
+.cube-shell .text-slate-400,
+.cube-shell .text-slate-500 {
+  color: #596779;
+}
+
+.cube-shell .text-sky-200 {
+  color: #00476e;
+}
+
+.cube-shell .text-sky-300 {
+  color: #005d8e;
+}
+
+.cube-shell .text-emerald-200,
+.cube-shell .text-emerald-300 {
+  color: #005137;
+}
+
+.cube-shell .text-violet-200,
+.cube-shell .text-violet-300 {
+  color: #514578;
+}
+
+.cube-shell .text-rose-300 {
+  color: #a32222;
+}
+
+.cube-shell .border-slate-700,
+.cube-shell .border-slate-800 {
+  border-color: #c6cbd4;
+}
+
+.cube-shell .bg-violet-500\/10 {
+  background-color: #efedfb;
+}
+
+.cube-shell .bg-emerald-500\/10 {
+  background-color: #e7f4ec;
+}
+
+.cube-shell .bg-rose-500\/10 {
+  background-color: #ffefed;
+}

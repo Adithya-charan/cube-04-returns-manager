@@ -1,5 +1,7 @@
 # CUBE Returns Manager — Architecture Audit Report
 
+> **Status correction (2026-10-01):** The verification matrix and conclusion below are a historical report and are not reliable evidence of current behavior. A fresh audit found unmounted frontend routes (now connected), QR-only identity promotion (now fixed), client-supplied disposition overrides (now removed), stale hashes after review (now refreshed), and unsafe upload filename suffix handling (now fixed). Camera QR scanning, hidden barcode support, image quality classification, production tenant security, remote-storage vision, and successful real Qwen inference remain unverified or unimplemented. See the current README and final project report for the actual test results.
+
 **Date**: 2026-09-26
 **Version**: 1.0
 

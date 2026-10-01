@@ -19,3 +19,12 @@ def test_mock_vision_provider_error():
     
     assert res.error == "Mock Vision Provider timeout/error"
     assert len(res.observations) == 0
+
+
+def test_yolo_provider_handles_empty_image_set():
+    from src.vision_yolo import YOLODetectionProvider
+
+    provider = YOLODetectionProvider()
+    provider._load_model = lambda: pytest.fail("YOLO should not load without images")
+
+    assert provider.detect([], []) == []

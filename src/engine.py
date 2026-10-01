@@ -1,3 +1,4 @@
+import re
 from typing import List, Optional, Tuple
 from .models import (
     InspectionCheck, Verdict, AmazonCondition, Disposition, EvidenceState
@@ -9,6 +10,9 @@ from .vision import VisionResult, VisionObservation
 # REQUIREMENTS.md:22,65). Do not invent alternative condition scales.
 
 class DecisionEngine:
+    IDENTITY_PASS_CONFIDENCE = 0.8
+    COMPONENT_VERDICT_CONFIDENCE = 0.7
+
     def __init__(self):
         # Authoritative condition mapping per CUBE challenge requirements:
         # Maps raw operational observation states to Amazon Condition Scale.
@@ -18,41 +22,65 @@ class DecisionEngine:
             "factory_sealed": AmazonCondition.NEW,
             "opened_unused": AmazonCondition.USED_LIKE_NEW,
             "signs_of_use": AmazonCondition.USED_VERY_GOOD,
+            "used_good": AmazonCondition.USED_GOOD,
+            "used_acceptable": AmazonCondition.USED_ACCEPTABLE,
             "damaged": AmazonCondition.UNACCEPTABLE,
         }
 
-    def verify_identity(self, expected_sku: str, vision_result: VisionResult, qr_auth_result: Optional[str] = None) -> InspectionCheck:
+    def verify_identity(
+        self,
+        expected_sku: str,
+        vision_result: VisionResult,
+        qr_auth_result: Optional[str] = None,
+        expected_identifiers: Optional[List[str]] = None,
+    ) -> InspectionCheck:
         """
         Verify product identity against expected SKU and QR Authentication state.
         
-        Confidence Policy:
-        - Uses MAX confidence across matching observations (any strong evidence supports PASS)
-        - CONFLICT ("wrong"/"different" in evidence) → FAIL regardless of confidence
-        - No match found → UNCERTAIN (never forces PASS with low confidence)
+        Only a legible positive identifier observation can establish an identity match.
+        Visual similarity, accessory observations, and QR alone cannot establish PASS.
         """
         confidence_accum = 0.0
         details = []
-        is_observed = False
+        evidence_refs = set()
+        has_identifier_match = False
         is_conflict = False
+        identifiers = [expected_sku, *(expected_identifiers or [])]
+        identifier_patterns = [
+            re.compile(rf"(?<![a-z0-9]){re.escape(identifier.casefold())}(?![a-z0-9])")
+            for identifier in identifiers if identifier
+        ]
 
         for obs in vision_result.observations:
-            if "wrong" in obs.evidence_desc.lower() or "different" in obs.evidence_desc.lower():
+            if obs.observation_type not in {"identity", "text"}:
+                continue
+
+            evidence = f"{obs.object_name} {obs.evidence_desc}"
+            evidence_lower = evidence.lower()
+            if any(term in evidence_lower for term in ("wrong item", "different product", "identifier mismatch", "does not match")):
                 is_conflict = True
                 details.append(obs.evidence_desc)
-            if expected_sku.lower() in obs.object_name.lower() or "product" in obs.object_name.lower():
-                if obs.state == EvidenceState.OBSERVED:
-                    is_observed = True
-                    confidence_accum = max(confidence_accum, obs.confidence or 0.0)
-                    details.append(obs.evidence_desc)
+                evidence_refs.add(obs.image_reference)
+
+            match_is_qualified_negative = any(term in evidence_lower for term in ("not legible", "unreadable", "blurry", "not visible", "not present"))
+            confidence = obs.confidence or 0.0
+            if (
+                obs.state == EvidenceState.OBSERVED
+                and not match_is_qualified_negative
+                and any(pattern.search(evidence_lower) for pattern in identifier_patterns)
+                and confidence >= self.IDENTITY_PASS_CONFIDENCE
+            ):
+                has_identifier_match = True
+                confidence_accum = max(confidence_accum, confidence)
+                details.append(obs.evidence_desc)
+                evidence_refs.add(obs.image_reference)
                     
         # Apply QR Authentication Signals First
         if qr_auth_result == "PRODUCT_PACKAGE_MISMATCH":
             is_conflict = True
             details.insert(0, "QR Authentication: PRODUCT_PACKAGE_MISMATCH (Strong fraud signal)")
         elif qr_auth_result == "AUTHENTICATED":
-            is_observed = True
-            confidence_accum = max(confidence_accum, 0.95)
-            details.insert(0, "QR Authentication: MATCH (Validated)")
+            details.insert(0, "QR Authentication: MATCH (supporting signal only)")
         elif qr_auth_result in ["INVALID_CODE", "REPEATED_SCAN", "UNEXPECTED_STATE"]:
             details.insert(0, f"QR Authentication Anomaly: {qr_auth_result}. Routing to review.")
             # We don't automatically call it a conflict (vision might save it), but we force a review
@@ -60,18 +88,19 @@ class DecisionEngine:
 
         if is_conflict:
             verdict = Verdict.FAIL
-        elif is_observed and not is_conflict:
+        elif has_identifier_match and not is_conflict:
             if qr_auth_result in ["INVALID_CODE", "REPEATED_SCAN", "UNEXPECTED_STATE"]:
                 verdict = Verdict.UNCERTAIN
             else:
                 verdict = Verdict.PASS
         else:
             verdict = Verdict.UNCERTAIN
-            details.append("Insufficient visual identity evidence")
+            details.append("No visual evidence matching the expected SKU")
 
         return InspectionCheck(
             check_key="identity",
             verdict=verdict,
+            evidence_refs=sorted(ref for ref in evidence_refs if ref),
             confidence=confidence_accum,
             detail="; ".join(details) if details else "No evidence",
             model_version=vision_result.model_version,
@@ -90,38 +119,73 @@ class DecisionEngine:
         """
         details = []
         missing_parts = []
-        confidence = 1.0
+        uncertain_parts = []
+        evidence_refs = set()
+        confidence_scores = []
 
         for part in expected_parts:
-            part_observed = False
-            for obs in vision_result.observations:
-                if part.lower() in obs.object_name.lower():
-                    if obs.state == EvidenceState.OBSERVED:
-                        part_observed = True
-                    elif obs.state == EvidenceState.NOT_OBSERVED:
-                        # NOT OBSERVED does NOT automatically mean MISSING unless explicitly confirmed visually empty
-                        if "empty" in obs.evidence_desc.lower() or "missing" in obs.evidence_desc.lower():
-                            missing_parts.append(part)
-                            confidence = min(confidence, obs.confidence or 1.0)
-                        else:
-                            # It's uncertain if it's there
-                            details.append(f"{part} not clearly visible but may be obscured.")
+            matching = [
+                obs for obs in vision_result.observations
+                if part.casefold() in obs.object_name.casefold()
+                and obs.observation_type == "completeness"
+            ]
+            observed = [
+                obs for obs in matching
+                if obs.state == EvidenceState.OBSERVED
+                and (obs.confidence or 0.0) >= self.COMPONENT_VERDICT_CONFIDENCE
+            ]
+            explicitly_missing = [
+                obs for obs in matching
+                if obs.state == EvidenceState.MISSING
+                and (obs.confidence or 0.0) >= self.COMPONENT_VERDICT_CONFIDENCE
+            ]
+            low_confidence = [
+                obs for obs in matching
+                if obs.state in {EvidenceState.OBSERVED, EvidenceState.MISSING}
+                and (obs.confidence or 0.0) < self.COMPONENT_VERDICT_CONFIDENCE
+            ]
 
-            if not part_observed and part not in missing_parts:
-                details.append(f"Cannot firmly establish presence or absence of {part}.")
+            for obs in matching:
+                evidence_refs.add(obs.image_reference)
+                if obs.confidence is not None:
+                    confidence_scores.append(obs.confidence)
 
-        if missing_parts:
-            verdict = Verdict.FAIL
-            details.insert(0, f"Missing: {', '.join(missing_parts)}.")
-        elif any("Cannot firmly establish" in d for d in details):
+            if observed and explicitly_missing:
+                uncertain_parts.append(part)
+                details.append(f"{part}: CONFLICTING EVIDENCE across images.")
+            elif explicitly_missing:
+                missing_parts.append(part)
+                details.append(f"{part}: MISSING. {explicitly_missing[0].evidence_desc}")
+            elif observed:
+                details.append(f"{part}: PRESENT. {observed[0].evidence_desc}")
+            elif low_confidence:
+                uncertain_parts.append(part)
+                details.append(f"{part}: NOT_VERIFIED. Confidence below {self.COMPONENT_VERDICT_CONFIDENCE:.1f}. {low_confidence[0].evidence_desc}")
+            else:
+                uncertain_parts.append(part)
+                reason = matching[0].evidence_desc if matching else "No component observation was returned."
+                details.append(f"{part}: NOT_VERIFIED. {reason}")
+
+        if not expected_parts:
+            uncertain_parts.append("expected components")
+            details.append("No expected components were provided.")
+
+        if uncertain_parts:
             verdict = Verdict.UNCERTAIN
+        elif missing_parts:
+            verdict = Verdict.FAIL
         else:
             verdict = Verdict.PASS
-            details.insert(0, "All parts verified present.")
+
+        if missing_parts:
+            details.insert(0, f"Missing components: {', '.join(missing_parts)}.")
+
+        confidence = min(confidence_scores) if confidence_scores else 0.0
 
         return InspectionCheck(
             check_key="completeness",
             verdict=verdict,
+            evidence_refs=sorted(ref for ref in evidence_refs if ref),
             confidence=confidence,
             detail=" ".join(details),
             model_version=vision_result.model_version,
@@ -129,25 +193,48 @@ class DecisionEngine:
         )
 
     def verify_condition(self, raw_observed_state: str, vision_result: VisionResult) -> Tuple[InspectionCheck, Optional[AmazonCondition]]:
-        # Prefer vision observation over raw state if vision detects damage explicitly
-        predicted_condition = self.condition_map.get(raw_observed_state.lower(), None)
-        details = [f"Raw state: {raw_observed_state} -> mapped to {predicted_condition}"]
-        verdict = Verdict.PASS if predicted_condition else Verdict.UNCERTAIN
+        visual_observations = [
+            obs for obs in vision_result.observations
+            if obs.observation_type in {"condition", "damage"}
+        ]
+        classified = [
+            (self.condition_map[obs.object_name.casefold()], obs)
+            for obs in visual_observations
+            if obs.state == EvidenceState.OBSERVED
+            and obs.object_name.casefold() in self.condition_map
+            and (obs.confidence or 0.0) >= 0.7
+        ]
+        raw_condition = self.condition_map.get(raw_observed_state.casefold())
+        observed_conditions = {condition for condition, _ in classified}
+        has_ambiguous_visual_evidence = any(
+            obs.state in {EvidenceState.UNCERTAIN, EvidenceState.NOT_OBSERVED}
+            and obs.object_name.casefold() in self.condition_map
+            for obs in visual_observations
+        )
 
-        for obs in vision_result.observations:
-            if obs.object_name == "signs_of_use" or "damage" in obs.evidence_desc.lower():
-                if obs.state == EvidenceState.OBSERVED and "damage" in obs.evidence_desc.lower():
-                    predicted_condition = AmazonCondition.UNACCEPTABLE
-                    verdict = Verdict.FAIL
-                    details.append(f"Vision overriding condition due to damage: {obs.evidence_desc}")
+        predicted_condition = next(iter(observed_conditions)) if len(observed_conditions) == 1 else None
+        details = []
+        if predicted_condition:
+            details.extend(
+                f"{obs.object_name} -> {condition.value}: {obs.evidence_desc}"
+                for condition, obs in classified
+            )
+        if raw_condition and predicted_condition and raw_condition != predicted_condition:
+            details.append(f"Operator condition note conflicts with visual evidence ({raw_condition.value}).")
+            predicted_condition = None
 
+        is_confident = bool(classified) and not has_ambiguous_visual_evidence and len(observed_conditions) == 1
+        verdict = Verdict.PASS if is_confident and predicted_condition else Verdict.UNCERTAIN
         if verdict == Verdict.UNCERTAIN:
-            details.append("Insufficient rules to map condition authoritatively.")
+            details.append("Insufficient or conflicting visual evidence to classify condition.")
+
+        confidence = min((obs.confidence or 0.0) for _, obs in classified) if classified else 0.0
 
         return InspectionCheck(
             check_key="condition",
             verdict=verdict,
-            confidence=1.0,
+            evidence_refs=sorted({obs.image_reference for obs in visual_observations if obs.image_reference}),
+            confidence=confidence,
             detail="; ".join(details),
             model_version=vision_result.model_version,
             latency_ms=vision_result.latency_ms
@@ -159,7 +246,7 @@ class DecisionEngine:
         
         Rules (evaluated in order):
         1. Identity FAIL → DISPOSE (wrong item returned)
-        2. Identity UNCERTAIN OR Completeness UNCERTAIN → PENDING_REVIEW
+        2. Identity UNCERTAIN, Completeness UNCERTAIN, or unknown condition → PENDING_REVIEW
            (insufficient evidence for automated decision)
         3. Completeness FAIL (missing parts):
            - If condition == UNACCEPTABLE → DISPOSE
@@ -174,7 +261,7 @@ class DecisionEngine:
         """
         if identity.verdict == Verdict.FAIL:
             return Disposition.dispose
-        if identity.verdict == Verdict.UNCERTAIN or completeness.verdict == Verdict.UNCERTAIN:
+        if identity.verdict == Verdict.UNCERTAIN or completeness.verdict == Verdict.UNCERTAIN or condition is None:
             return Disposition.pending_review
             
         if completeness.verdict == Verdict.FAIL:

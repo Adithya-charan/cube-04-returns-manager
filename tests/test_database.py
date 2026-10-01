@@ -75,3 +75,31 @@ def test_save_and_retrieve_decision(db):
     assert len(retrieved.evidence) == 2
     assert len(retrieved.checks) == 1
     assert retrieved.decision.outcome.name == "restock"
+
+
+def test_decision_hash_covers_evidence_and_check_details():
+    decision = DecisionRecord(
+        record_id="RTN-HASH-001",
+        organization_id="org_demo_alpha",
+        subject="UNIT-HASH-001",
+        captured_at=datetime.now(timezone.utc),
+        operator_label="op_hash",
+        images=["image-ref-1"],
+        checks=[InspectionCheck(
+            check_key="identity",
+            verdict=Verdict.PASS,
+            evidence_refs=["label-image.jpg"],
+            confidence=0.95,
+            detail="Expected model label is legible.",
+            model_version="qwen3-vl:8b",
+        )],
+        outcome=Disposition.restock,
+        status=InspectionStatus.completed,
+    )
+    decision.finalize()
+    original_hash = decision.content_hash
+
+    decision.checks[0].detail = "Changed evidence explanation."
+    decision.finalize()
+
+    assert decision.content_hash != original_hash

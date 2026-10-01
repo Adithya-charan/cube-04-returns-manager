@@ -1,5 +1,7 @@
 # Returns Manager: Data Model
 
+> **Implementation note (2026-10-01):** These Pydantic types describe the current contract shape, but not every listed lifecycle entity is persisted or wired into routes. The current content hash covers only `record_id`, `outcome`, override count, and `status`; it does not guarantee full evidence immutability or independent verification.
+
 This document specifies the canonical models strictly utilizing Pydantic in accordance with the official cross-pod schema and `data/returns_sample.csv`. The Phase 2 structures fully separate operational models from AI interpretations while establishing an auditable flow.
 
 ## 1. Core Enumerations
@@ -37,7 +39,7 @@ Final interoperable contract consumed by downstream pods securely locked by hash
 - Retains visual log boundaries holding raw `images` strings. 
 - Aggregates the unified array of `InspectionCheck` models ensuring the `outcome` matches the strict enumeration properties.
 - Houses the array of `overrides`.
-- Runs a deterministic `finalize()` pass over the parameters deriving a secure `content_hash` guaranteeing outcome integrity structurally. 
+- Runs `finalize()` to derive a partial SHA-256 content hash from `record_id`, `outcome`, override count, and `status`. This is not a signature and does not cover all evidence fields.
 
 ## 7. Lifecycle Container (ReturnRecord)
 Wraps the entire logical lifespan across internal boundaries combining:

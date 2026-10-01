@@ -45,11 +45,14 @@ STRICT RULES:
 4. Do NOT assume a component is missing because it is not visible — use UNCERTAIN.
 5. Do NOT invent accessories not in the expected parts list.
 6. Do NOT report model numbers, SKUs, or serial numbers unless text is clearly legible in the image.
+    6a. Expected identifiers are reference data only. Never repeat one as an observation unless the exact identifier is visibly legible in a submitted image.
 7. Do NOT report damage unless visible evidence exists (scratches, dents, cracks, stains, broken parts).
 8. IMPORTANT: NOT_OBSERVED does NOT mean MISSING. Use UNCERTAIN if you cannot tell.
 
 Expected components to check: {expected_parts}
+Expected product identifiers for visual verification only: {identity_guidance}
 Operator condition note: {condition_hint}
+Images supplied: {image_count}. They are numbered from 0 in the order provided. Include an integer image_index on every observation identifying its supporting image. If no single image supports it, omit image_index.
 
 VISUAL EVIDENCE REQUIREMENTS:
 - Every observation MUST include specific visual evidence from the image
@@ -57,23 +60,24 @@ VISUAL EVIDENCE REQUIREMENTS:
 - For text/OCR: quote the exact text seen, note if partially legible
 - For components: describe location, orientation, and visibility
 - For condition: describe specific wear/damage markers observed
+- For condition_observations, use a name from the configured Amazon mapping only when evidence supports it: factory_sealed, opened_unused, signs_of_use, used_good, used_acceptable, damaged. Otherwise use UNCERTAIN.
 
 Respond ONLY with valid JSON in this exact structure:
 {{
   "product_identity_observations": [
-    {{"type": "identity", "name": "product_label", "status": "PRESENT|UNCERTAIN", "confidence": 0.9, "evidence": "brand label 'soundcore' visible on speaker grille"}}
+    {{"type": "identity", "name": "product_label", "status": "PRESENT|UNCERTAIN", "confidence": 0.9, "evidence": "brand label 'soundcore' visible on speaker grille", "image_index": 0}}
   ],
   "visible_components": [
-    {{"type": "completeness", "name": "cable", "status": "PRESENT|MISSING|UNCERTAIN|NOT_VERIFIED", "confidence": 0.85, "evidence": "USB-C cable coiled in upper compartment of box"}}
+    {{"type": "completeness", "name": "cable", "status": "PRESENT|MISSING|UNCERTAIN|NOT_VERIFIED", "confidence": 0.85, "evidence": "USB-C cable coiled in upper compartment of box", "image_index": 1}}
   ],
   "condition_observations": [
-    {{"type": "condition", "name": "signs_of_use", "status": "PRESENT|NOT_OBSERVED|UNCERTAIN", "confidence": 0.8, "evidence": "minor scuff marks on bottom edge, consistent with light use"}}
+        {{"type": "condition", "name": "signs_of_use", "status": "PRESENT|UNCERTAIN", "confidence": 0.8, "evidence": "light surface wear visible on the lower edge", "image_index": 2}}
   ],
   "damage_observations": [
-    {{"type": "damage", "name": "scratch", "status": "PRESENT|NOT_OBSERVED|UNCERTAIN", "confidence": 0.9, "evidence": "no scratches visible on matte black surface"}}
+    {{"type": "damage", "name": "scratch", "status": "PRESENT|NOT_OBSERVED|UNCERTAIN", "confidence": 0.9, "evidence": "scratch visible on matte black surface", "image_index": 3}}
   ],
   "text_observations": [
-    {{"type": "text", "name": "ocr_label", "status": "PRESENT|UNCERTAIN", "confidence": 0.85, "evidence": "text 'soundcore' and 'User Manual' legible on manual cover"}}
+    {{"type": "text", "name": "ocr_label", "status": "PRESENT|UNCERTAIN", "confidence": 0.85, "evidence": "text 'soundcore' and 'User Manual' legible on manual cover", "image_index": 1}}
   ],
   "uncertainties": [
     "Cable compartment partially occluded by packaging flap"
@@ -172,7 +176,7 @@ def _parse_ollama_response(raw: str, images: List[str]) -> List[VisionObservatio
     # Map Qwen status strings → EvidenceState
     STATUS_MAP = {
         "PRESENT": EvidenceState.OBSERVED,
-        "MISSING": EvidenceState.NOT_OBSERVED,
+        "MISSING": EvidenceState.MISSING,
         "UNCERTAIN": EvidenceState.UNCERTAIN,
         "NOT_VERIFIED": EvidenceState.UNCERTAIN,
         "NOT_OBSERVED": EvidenceState.NOT_OBSERVED,
@@ -181,7 +185,6 @@ def _parse_ollama_response(raw: str, images: List[str]) -> List[VisionObservatio
     ALLOWED_STATES = set(STATUS_MAP.keys())
     ALLOWED_TYPES = {"identity", "completeness", "condition", "damage", "text"}
 
-    img_ref = images[0] if images else "none"
     observations = []
 
     def _extract(section_key: str, default_type: str):
@@ -213,6 +216,11 @@ def _parse_ollama_response(raw: str, images: List[str]) -> List[VisionObservatio
             evidence = item.get("evidence", "No description")
             if not evidence or evidence == "No description":
                 logger.warning(f"Missing evidence for observation: {name}")
+
+            image_index = item.get("image_index")
+            if image_index is None and len(images) == 1:
+                image_index = 0
+            image_ref = images[image_index] if isinstance(image_index, int) and not isinstance(image_index, bool) and 0 <= image_index < len(images) else ""
             
             observations.append(VisionObservation(
                 observation_type=obs_type,
@@ -220,7 +228,7 @@ def _parse_ollama_response(raw: str, images: List[str]) -> List[VisionObservatio
                 state=state,
                 confidence=confidence,
                 evidence_desc=f"[{default_type}] {evidence}",
-                image_reference=img_ref
+                image_reference=image_ref
             ))
 
     _extract("product_identity_observations", "identity")
@@ -248,13 +256,10 @@ class OllamaQwenVisionProvider(VisionProvider):
         MAX_IMAGE_SIZE_BYTES    (default: 4194304) - 4MB max upload size
         MIN_IMAGE_DIMENSION     (default: 64) - minimum image dimension
 
-    Multi-image limitation:
-        The provider accepts multiple images but currently only the FIRST image
-        is used as the reference for all observations (image_reference field).
-        All images are sent to the model in a single request, but observations
-        are not attributed to specific images. This is a known limitation for
-        the demo; a full multi-image implementation would require per-image
-        observation tracking.
+    Multi-image attribution:
+        Observations receive an image reference only when the model returns a
+        valid zero-based image_index. Missing or invalid indices remain
+        unattributed instead of being assigned to the first image.
 
     Concurrent Request Safety:
         Uses a thread lock to serialize requests to Ollama, preventing CPU
@@ -300,6 +305,7 @@ class OllamaQwenVisionProvider(VisionProvider):
         images: List[str],
         expected_parts: List[str],
         condition_guidance: Optional[str] = None,
+        identity_guidance: Optional[str] = None,
     ) -> VisionResult:
         """
         Inspect images with request serialization to prevent CPU contention.
@@ -308,13 +314,14 @@ class OllamaQwenVisionProvider(VisionProvider):
         preventing CPU contention when multiple requests arrive simultaneously.
         """
         with self._request_lock:
-            return self._inspect_impl(images, expected_parts, condition_guidance)
+            return self._inspect_impl(images, expected_parts, condition_guidance, identity_guidance)
 
     def _inspect_impl(
         self,
         images: List[str],
         expected_parts: List[str],
         condition_guidance: Optional[str] = None,
+        identity_guidance: Optional[str] = None,
     ) -> VisionResult:
         start_time = time.time()
 
@@ -342,15 +349,32 @@ class OllamaQwenVisionProvider(VisionProvider):
         # Build combined prompt with JSON schema embedded (works better with qwen3-vl)
         prompt_text = INSPECTION_PROMPT_TEMPLATE.format(
             expected_parts=", ".join(expected_parts) if expected_parts else "unspecified",
+            identity_guidance=identity_guidance or "none provided",
             condition_hint=condition_guidance or "none provided",
+            image_count=len(images),
         )
 
         # Encode images that exist on disk
         encoded_images = []
+        valid_image_refs = []
+        invalid_images = []
         for img_path in images:
             b64 = _validate_and_process_image(img_path)
             if b64:
                 encoded_images.append(b64)
+                valid_image_refs.append(img_path)
+            else:
+                invalid_images.append(img_path)
+
+        if invalid_images:
+            return VisionResult(
+                observations=[],
+                model_name=self.model,
+                model_version="unknown",
+                provider=self.provider,
+                latency_ms=int((time.time() - start_time) * 1000),
+                error=f"No valid images for inspection; image validation failed for: {invalid_images}",
+            )
 
         if not encoded_images:
             return VisionResult(
@@ -417,7 +441,7 @@ class OllamaQwenVisionProvider(VisionProvider):
                 error=f"Malformed Ollama response: {exc}"
             )
 
-        observations = _parse_ollama_response(raw_content, images)
+        observations = _parse_ollama_response(raw_content, valid_image_refs)
 
         if not observations:
             # Model responded but we could not parse structured output

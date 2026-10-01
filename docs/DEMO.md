@@ -1,5 +1,7 @@
 # Returns Manager: Demo Guide
 
+> **Current verification note (2026-10-01):** `start_demo.py` launches the backend and `mobile/` app. The old `frontend/` paths and scenario outcomes below are historical, not verified. QR IDs are manually entered; there is no QR camera scanner or hidden-barcode support. Physical camera capture has not been tested, and real Qwen3-VL inference timed out at 300 seconds on the last local run. Use the current setup and limitations in `README.md` as authoritative.
+
 ## Requirements
 - Python 3.12+
 - Node.js v18+ 
